@@ -3,22 +3,18 @@ extern crate clap;
 use clap::{load_yaml, App};
 use serde_json::{from_str, Map, Value};
 use std::fs;
+use std::io::Write;
 use std::net::{TcpStream, ToSocketAddrs};
-use std::ops::RangeInclusive;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, SystemTime};
 use threadpool::ThreadPool;
 
-const DEFAULT_PORT_RANGE: RangeInclusive<u16> = 0..=65535;
-
-#[derive(Debug)]
 struct Options {
-    ports: RangeInclusive<u16>,
+    ports: Vec<u16>,
     target: String,
     threads_number: i32,
     connection_timeout_time: f32,
-    thread_sleep_time: f32,
     output_file: Option<String>,
     open_ports: Vec<String>,
     common_ports: Map<String, Value>,
@@ -41,11 +37,11 @@ fn get_options() -> Options {
         Err(_) => {
             println!("Error: Cant find common ports file");
             std::process::exit(-1);
-        },
+        }
     };
     let parsed: Value = from_str(&config).unwrap();
     let common_ports: Map<String, Value> = parsed.as_object().unwrap().clone();
-    let ports: Vec<u16> = matches
+    let mut ports: Vec<u16> = matches
         .values_of("port")
         .unwrap()
         .map(|port| match port.parse::<u16>() {
@@ -53,15 +49,17 @@ fn get_options() -> Options {
             Err(err) => panic!("Error: {}", err),
         })
         .collect();
-    let ports: RangeInclusive<u16> = if ports.len() == 1 {
+    if ports.len() == 1 {
         if ports[0] == 0 {
-            DEFAULT_PORT_RANGE
+            ports = common_ports
+                .iter()
+                .map(|(k, _)| k.parse().unwrap())
+                .collect::<Vec<u16>>();
+            ports.sort();
         } else {
-            ports[0]..=ports[0]
+            ports.push(ports[0]);
         }
-    } else {
-        ports[0]..=ports[1]
-    };
+    }
     let target = matches.value_of("target").unwrap().to_owned();
     let threads_number = matches
         .value_of("threads_number")
@@ -74,19 +72,13 @@ fn get_options() -> Options {
         .unwrap()
         .parse::<f32>()
         .unwrap();
-    let thread_sleep_time: f32 = matches
-        .value_of("thread_sleep_time")
-        .unwrap()
-        .parse::<f32>()
-        .unwrap();
-    let open_ports = Vec::with_capacity((*ports.end() - *ports.start()) as usize);
+    let open_ports = Vec::with_capacity((ports.last().unwrap() - ports[0]) as usize);
     let options = Options {
         ports,
         target,
         threads_number,
         output_file,
         connection_timeout_time,
-        thread_sleep_time,
         open_ports,
         common_ports,
     };
@@ -95,14 +87,13 @@ fn get_options() -> Options {
 }
 
 fn port_checker(host: &str, port: u16, connection_timeout_time: f32, tx: mpsc::Sender<u16>) {
-    if TcpStream::connect_timeout(
+    let cnt = TcpStream::connect_timeout(
         &(host, port).to_socket_addrs().unwrap().next().unwrap(),
         Duration::from_secs_f32(connection_timeout_time),
-    )
-    .is_ok()
-    {
+    );
+    if cnt.is_ok() {
         tx.send(port).unwrap();
-    };
+    }
 }
 
 fn launch_thread(options: &mut Options, port: u16, tx: mpsc::Sender<u16>, pool: &ThreadPool) {
@@ -113,28 +104,47 @@ fn launch_thread(options: &mut Options, port: u16, tx: mpsc::Sender<u16>, pool: 
 }
 
 fn start_scan_thread(options: &mut Options, tx: mpsc::Sender<u16>, pool: &ThreadPool) {
-    println!(
-        "Scanning ports by range:\nFROM PORT {} TO PORT {}\n-----------------",
-        options.ports.start(),
-        options.ports.end()
-    );
-
-    for port in options.ports.clone() {
-        launch_thread(options, port, tx.clone(), &pool);
+    if options.ports.len() > 2 {
+        //  scan default ports
+        println!(
+            "\nScanning default ports:\n{:?}\n-----------------",
+            &options.ports[..=50]
+        );
+        for port in options.ports.clone() {
+            launch_thread(options, port, tx.clone(), &pool);
+        }
+    } else {
+        println!(
+            "Scanning ports by range:\nFROM PORT {} TO PORT {}\n-----------------",
+            options.ports[0],
+            options.ports.last().unwrap()
+        );
+        for port in options.ports[0]..=*options.ports.last().unwrap() {
+            launch_thread(options, port, tx.clone(), &pool);
+        }
     }
 }
 
 fn write_to_output_file(filename: &str, data: &str) {
-    fs::write(filename, data).expect("Unable to write file");
+    let mut f = fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(filename)
+        .unwrap();
+
+    f.write_all(data.as_bytes()).expect("unable to create file");
 }
 
 fn main() {
+    // Initialize variables
     let mut options = get_options();
     let hostname = options.target;
     options.target = get_ip(&hostname);
     let start_time = SystemTime::now();
 
+    // thread communication channel
     let (tx, rx): (mpsc::Sender<u16>, mpsc::Receiver<u16>) = mpsc::channel();
+    // thread pool
     let pool = ThreadPool::new(options.threads_number as usize);
     start_scan_thread(&mut options, tx, &pool);
     let receiver_thread = thread::spawn(move || {
@@ -149,18 +159,22 @@ fn main() {
         options
     });
 
+    // Wait for the scan to complete.
     pool.join();
+    // geting the updated options.
     options = receiver_thread.join().unwrap();
-    let total_time = SystemTime::now()
-        .duration_since(start_time)
-        .unwrap()
-        .as_secs_f64();
+
+    // calculating the program execution time.
+    let total_time = start_time.elapsed().unwrap().as_secs_f64();
+    // if --output mode
     if options.output_file.is_some() {
         write_to_output_file(
             &options.output_file.unwrap(),
             &format!(
                 "[{}] <{}> Open Ports: {:?}\n",
-                "date", hostname, options.open_ports
+                chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(), // current date
+                hostname,
+                options.open_ports
             ),
         );
     }

@@ -35,7 +35,7 @@ args:
       about: the socket connect timeout in second(s) for each port checking.
       default_value: "0.2"
 
-  - thread_sleep_time:
-      long: sleep
-      about: the sleep time in second(s) between threads execution.
-      default_value: "0.2"
+#   - thread_sleep_time:
+#       long: sleep
+#       about: the sleep time in second(s) between threads execution.
+#       default_value: "0.2"
