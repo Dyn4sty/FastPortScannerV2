@@ -1,0 +1,41 @@
+name: FastPortScanner
+version: "1.0"
+author: Dyn4sty
+about: Fast multithreaded port scanner
+args:
+  - port:
+      short: p
+      long: port
+      about: the port or port-range to scan for. Default = common ports
+      takes_value: true
+      allow_hyphen_values: true
+      value_delimiter: "-"
+      default_value: "0"
+  - target:
+      short: t
+      long: target
+      required: true
+      takes_value: true
+      about: the target hostname or ip address
+
+  - output_file:
+      short: o
+      long: output
+      about: output file name to save the scan results.
+      takes_value: true
+
+  - threads_number:
+      long: threads
+      about: the threads number for port scan operation.
+      default_value: "500"
+      takes_value: true
+
+  - connection_timeout_time:
+      long: timeout
+      about: the socket connect timeout in second(s) for each port checking.
+      default_value: "0.2"
+
+  - thread_sleep_time:
+      long: sleep
+      about: the sleep time in second(s) between threads execution.
+      default_value: "0.2"
